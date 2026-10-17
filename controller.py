@@ -258,7 +258,7 @@ def secret_values(record):
     return decrypt(record["password"]), decrypt(record["totp"])
 
 
-def record_result(vm_id, email, ok, code, detail, kind):
+def record_result(vm_id, ok, code, detail):
     current = state()
     current["last"][vm_id] = {
         "ok": ok,
@@ -266,10 +266,16 @@ def record_result(vm_id, email, ok, code, detail, kind):
         "detail": redact(detail)[:180],
         "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
-    if email:
-        bucket = current["events"].setdefault(email_hash(email), [])
-        bucket.append({"t": time.time(), "kind": kind})
-        current["events"][email_hash(email)] = fresh_events(bucket, time.time())
+    save_json(STATE_PATH, current)
+
+
+def record_attempt(email, kind):
+    # Only a real browser login counts toward the 6h limit; sweeps, rejected
+    # attempts and pre-login failures never touch the account.
+    current = state()
+    bucket = current["events"].setdefault(email_hash(email), [])
+    bucket.append({"t": time.time(), "kind": kind})
+    current["events"][email_hash(email)] = fresh_events(bucket, time.time())
     save_json(STATE_PATH, current)
 
 
@@ -358,7 +364,6 @@ def run_relogin(job, kind):
     vm_id = job["vm_id"]
     exchanged = False
     was_running = False
-    email = ""
     try:
         saved = accounts()
         record = saved.get(vm_id)
@@ -397,6 +402,7 @@ def run_relogin(job, kind):
         profile = os.path.join(PROFILES, email_hash(email))
         os.makedirs(profile, mode=0o700, exist_ok=True)
         job["message"] = "正在用指纹浏览器登录"
+        record_attempt(email, kind)
         result = browser_login(
             job,
             {
@@ -441,7 +447,7 @@ def run_relogin(job, kind):
                 api("POST", f"/api/panel/vms/{vm_id}/stop", {}, timeout=120)
             message = err.get("message") or code
             raise RuntimeError(f"{code}: {redact(message)[:180]}")
-        record_result(vm_id, email, True, "ok", "测试通过", kind)
+        record_result(vm_id, True, "ok", "测试通过")
         job["status"] = "done"
         job["message"] = "登录成功，测试已通过"
     except Exception as exc:
@@ -452,7 +458,7 @@ def run_relogin(job, kind):
                 detail += "；已重新打开槽位"
             except Exception as restore_error:
                 detail += "；重新打开失败：" + redact(restore_error)
-        record_result(vm_id, email, False, "error", detail, kind)
+        record_result(vm_id, False, "error", detail)
         job["status"] = "error"
         job["message"] = detail[:300]
     finally:
@@ -507,7 +513,7 @@ def sweep_once():
         code = (result.get("error") or {}).get("code") or "verify_failed"
         print("sweep", vm_id, code, flush=True)
         if code != "oauth_expired":
-            record_result(vm_id, slot.get("saved_email") or "", False, code, "巡检发现，未自动登录", "auto")
+            record_result(vm_id, False, code, "巡检发现，未自动登录")
             continue
         try:
             start_job(vm_id, "auto")
