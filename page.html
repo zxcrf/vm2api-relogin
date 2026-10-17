@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>槽位重新登录</title>
+<style>
+  :root { color-scheme: light; --line: #ddd; --ink: #1c1c1c; --muted: #666; --ok: #0b7a3b; --bad: #a12622; }
+  body { margin: 0; font: 15px/1.45 "Iowan Old Style", Palatino, "Songti SC", serif; color: var(--ink); background: #f6f5f2; }
+  main { max-width: 920px; margin: 0 auto; padding: 28px 18px 64px; }
+  h1 { font-size: 28px; font-weight: 600; margin: 0 0 6px; }
+  p.lead { margin: 0 0 22px; color: var(--muted); }
+  form.login, article { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  form.login { max-width: 360px; display: grid; gap: 10px; }
+  label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+  input { font: inherit; padding: 8px 10px; border: 1px solid #ccc; border-radius: 6px; }
+  button { font: inherit; padding: 8px 12px; border-radius: 6px; border: 1px solid #222; background: #222; color: #fff; cursor: pointer; }
+  button.ghost { background: #fff; color: #222; }
+  button:disabled { opacity: 0.55; cursor: default; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 12px; color: var(--muted); font-weight: 600; }
+  .rowform { display: grid; grid-template-columns: 1.3fr 1fr 1fr auto; gap: 8px; align-items: end; }
+  .actions { display: flex; gap: 8px; }
+  .ok { color: var(--ok); }
+  .bad { color: var(--bad); }
+  .muted { color: var(--muted); }
+  #msg { min-height: 1.2em; margin: 10px 0; }
+  header.bar { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+  @media (max-width: 720px) {
+    .rowform { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header class="bar">
+    <h1>槽位重新登录</h1>
+    <button id="logout" class="ghost" hidden type="button">退出</button>
+  </header>
+  <p class="lead">用这个槽绑定的代理，在固定指纹的浏览器里用密码和验证器重新授权。保存的密码不会再显示出来。</p>
+  <p id="msg"></p>
+  <form id="login" class="login" hidden>
+    <label>面板用户名<input name="username" autocomplete="username" required></label>
+    <label>面板密码<input name="password" type="password" autocomplete="current-password" required></label>
+    <button type="submit">登录</button>
+  </form>
+  <article id="slots" hidden>
+    <table>
+      <thead>
+        <tr><th>槽位</th><th>状态</th><th>账号</th></tr>
+      </thead>
+      <tbody id="body"></tbody>
+    </table>
+  </article>
+</main>
+<script>
+const msg = document.querySelector("#msg");
+function say(text, bad) {
+  msg.textContent = text || "";
+  msg.className = bad ? "bad" : "muted";
+}
+async function api(path, options) {
+  const response = await fetch(path, {
+    headers: { "Content-Type": "application/json", "X-Requested-With": "relogin" },
+    ...options,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(data.error || response.statusText);
+    error.status = response.status;
+    throw error;
+  }
+  return data;
+}
+function field(name, type, placeholder) {
+  const input = document.createElement("input");
+  input.name = name;
+  input.type = type;
+  input.placeholder = placeholder;
+  input.autocomplete = "off";
+  return input;
+}
+function render(slots) {
+  const body = document.querySelector("#body");
+  body.replaceChildren();
+  for (const slot of slots) {
+    const tr = document.createElement("tr");
+    const id = document.createElement("td");
+    id.textContent = slot.id;
+    const state = document.createElement("td");
+    const bits = [slot.status || "unknown"];
+    if (slot.schedulable) bits.push("调度中");
+    if (slot.job) bits.push(slot.job.message || slot.job.status);
+    state.textContent = bits.join(" · ");
+    if (slot.last && slot.last.ok === false) state.className = "bad";
+    if (slot.last && slot.last.ok === true) state.className = "ok";
+    const form = document.createElement("form");
+    form.className = "rowform";
+    const email = field("email", "email", slot.saved_email || slot.panel_email || "邮箱");
+    if (slot.saved_email) email.value = slot.saved_email;
+    else if (slot.panel_email) email.value = slot.panel_email;
+    const password = field("password", "password", slot.password_set ? "密码已保存" : "密码");
+    const totp = field("totp", "password", slot.totp_set ? "验证器已保存" : "TOTP 密钥");
+    form.append(email, password, totp);
+    const actions = document.createElement("div");
+    actions.className = "actions";
+    const save = document.createElement("button");
+    save.type = "submit";
+    save.textContent = "保存并登录";
+    const keep = document.createElement("button");
+    keep.type = "button";
+    keep.className = "ghost";
+    keep.textContent = "只保存";
+    actions.append(save, keep);
+    const cell = document.createElement("td");
+    const note = document.createElement("p");
+    note.className = "muted";
+    cell.append(form, note);
+    const lines = [];
+    if (slot.panel_email) lines.push("面板邮箱 " + slot.panel_email);
+    if (slot.last) lines.push((slot.last.ok ? "上次成功 " : "上次失败 ") + (slot.last.detail || slot.last.code || ""));
+    note.textContent = lines.join(" · ");
+    form.append(actions);
+    tr.append(id, state, cell);
+    body.append(tr);
+    async function submit(run) {
+      save.disabled = keep.disabled = true;
+      say(slot.id + (run ? " 正在登录…" : " 正在保存…"));
+      try {
+        const payload = {
+          email: email.value.trim(),
+          password: password.value,
+          totp: totp.value,
+          run,
+        };
+        const result = await api("api/slots/" + slot.id, { method: "POST", body: JSON.stringify(payload) });
+        password.value = "";
+        totp.value = "";
+        if (result.job_id) watch(result.job_id);
+        else {
+          say(slot.id + " 已保存");
+          load();
+        }
+      } catch (error) {
+        say(error.message, true);
+        save.disabled = keep.disabled = false;
+      }
+    }
+    form.addEventListener("submit", (event) => { event.preventDefault(); submit(true); });
+    keep.addEventListener("click", () => submit(false));
+  }
+}
+async function watch(jobId) {
+  for (let i = 0; i < 180; i++) {
+    const job = await api("api/jobs/" + jobId);
+    say(job.message || job.status, job.status === "error");
+    if (job.status === "done" || job.status === "error") {
+      load();
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+}
+async function load() {
+  const data = await api("api/slots");
+  document.querySelector("#login").hidden = true;
+  document.querySelector("#slots").hidden = false;
+  document.querySelector("#logout").hidden = false;
+  render(data.slots);
+}
+document.querySelector("#login").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.target;
+  say("正在核对面板账号…");
+  try {
+    await api("api/login", {
+      method: "POST",
+      body: JSON.stringify({ username: form.username.value, password: form.password.value }),
+    });
+    form.password.value = "";
+    say("");
+    load();
+  } catch (error) {
+    say(error.message, true);
+  }
+});
+document.querySelector("#logout").addEventListener("click", async () => {
+  await api("api/logout", { method: "POST", body: "{}" });
+  location.reload();
+});
+load().catch((error) => {
+  if (error.status === 401) {
+    document.querySelector("#login").hidden = false;
+    say("");
+    return;
+  }
+  say(error.message, true);
+});
+</script>
+</body>
+</html>

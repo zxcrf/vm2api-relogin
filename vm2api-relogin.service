@@ -1,0 +1,20 @@
+[Unit]
+Description=vm2api fingerprint relogin sidecar
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/vm2api-relogin/app
+ExecStart=/opt/vm2api-relogin/venv/bin/python /opt/vm2api-relogin/app/controller.py
+Restart=on-failure
+RestartSec=3
+Environment=RELOGIN_ROOT=/opt/vm2api-relogin
+Environment=VM2API_BASE=http://127.0.0.1:8787
+Environment=VM2API_ENV=/opt/vm2api/.env
+Environment=LISTEN=10.66.0.2:8791
+Environment=PUBLIC_PREFIX=/relogin
+Environment=BROWSER_IMAGE=vm2api-relogin-poc:0
+
+[Install]
+WantedBy=multi-user.target
